@@ -38,7 +38,7 @@ header,.no-print,.back{display:none!important}body{background:#fff}.card{box-sha
 </style>
 </head>
 <body>
-<header><b>ESNAF CEP</b><div id="headerFirm" style="font-size:16px;font-weight:700;margin-top:3px"></div><div class="sub">Bulut V6 • Aylık Raporlar</div></header>
+<header><b>ESNAF CEP</b><div id="headerFirm" style="font-size:16px;font-weight:700;margin-top:3px"></div><div class="sub">Bulut V6.1 • Firma Seçimi</div></header>
 
 <style>
 #cloudGate{position:fixed;inset:0;z-index:100;background:#f4f6f8;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -46,7 +46,7 @@ header,.no-print,.back{display:none!important}body{background:#fff}.card{box-sha
 #cloudBar{background:#fff4cc;color:#302700;padding:9px 16px;font-size:12px;display:none}
 </style>
 <div id="cloudGate"><div class="card"><h2>☁️ Esnaf Cep Bulut V6</h2><p class="note">Bulut hesabınla giriş yap. Müşteri, cari, alış-satış, tahsilat, teklifler, çekler ve senetler bulutta saklanır.</p><input id="cloudEmail" type="email" placeholder="E-posta" autocomplete="username"><input id="cloudPassword" type="password" placeholder="Şifre" autocomplete="current-password"><button id="cloudLogin" class="yellow">Giriş Yap</button><div id="cloudState" role="status"></div></div></div>
-<div id="cloudBar">☁️ Cari, teklif, çek, senet ve firma ayarları bulutta <button id="cloudLogout" style="width:auto;padding:5px 10px;float:right">Çıkış</button></div>
+<div id="cloudBar">☁️ <span id="activeFirmLabel">Bulut</span> <button id="switchFirm" style="width:auto;padding:5px 10px;margin-left:6px">Firma Değiştir</button> <button id="cloudLogout" style="width:auto;padding:5px 10px;float:right">Çıkış</button></div>
 <main>
 <section id="home" class="screen active">
   <div class="card"><h2>Hoş geldin 👋</h2><div class="note">Bulut V6: Aylık raporlar, tarih aralığı ve müşteri bakiyeleri bulut kayıtlarından hesaplanır.</div></div>
@@ -387,7 +387,7 @@ refresh();loadSettings();renderOffer();refreshOffers();
    No automatic import of old device data. No local writes for financial records. */
 const CLOUD_URL='https://dskddjsaixsxlqpztdmv.supabase.co';
 const CLOUD_KEY='sb_publishable_tfNlmO2WEaw-j6-6neU9-g_JNIvzGCv';
-let cloudClient=null,cloudFirm=null,cloudReady=false,cloudBusy=false;
+let cloudClient=null,cloudFirm=null,cloudReady=false,cloudBusy=false,cloudMemberships=[];
 const cloudMessage=m=>document.getElementById('cloudState').textContent=m;
 const cloudError=e=>e?.message||String(e);
 function cloudGuard(){if(!cloudReady||!cloudFirm)throw Error('Önce bulut hesabına giriş yap.');}
@@ -400,17 +400,42 @@ async function cloudStart(){
  }catch(e){cloudMessage(cloudError(e));}
 }
 async function cloudEnter(user){
- const {data:members,error}=await cloudClient.from('firm_members').select('firm_id').eq('user_id',user.id).limit(1);
+ const {data:members,error}=await cloudClient.from('firm_members').select('firm_id').eq('user_id',user.id);
  if(error)throw error;
  if(!members?.length)throw Error('Bu kullanıcı için firma üyeliği bulunamadı.');
- cloudFirm=members[0].firm_id;
- // Do not expose locally stored records as cloud records.
- db.customers=[];db.transactions=[];db.collections=[];
- await cloudReload();
- cloudReady=true;
- document.getElementById('cloudGate').style.display='none';
- document.getElementById('cloudBar').style.display='block';
+ cloudMemberships=[...new Set(members.map(m=>m.firm_id).filter(Boolean))];
+ await chooseFirm(cloudMemberships[0]);
 }
+async function chooseFirm(firmId){
+ if(!cloudMemberships.includes(firmId))throw Error('Bu firmaya üyeliğin yok.');
+ const oldFirm=cloudFirm, oldReady=cloudReady;
+ cloudReady=false;cloudFirm=firmId;
+ try{
+  await cloudReload();
+  cloudReady=true;
+  document.getElementById('cloudGate').style.display='none';
+  document.getElementById('cloudBar').style.display='block';
+  document.getElementById('activeFirmLabel').textContent='Aktif firma: '+(db.settings?.firm||firmId.slice(0,8));
+  showScreen('home');
+ }catch(e){cloudFirm=oldFirm;cloudReady=oldReady;throw e;}
+}
+document.getElementById('switchFirm').onclick=async()=>{
+ if(!cloudReady)return;
+ try{
+  const choices=[];
+  for(const id of cloudMemberships){
+   const {data,error}=await cloudClient.from('firm_settings').select('firm').eq('firm_id',id).maybeSingle();
+   choices.push({id,name:error?'Firma '+id.slice(0,8):(data?.firm||'Firma '+id.slice(0,8))});
+  }
+  const message=choices.map((c,i)=>(i+1)+'. '+c.name+(c.id===cloudFirm?' (aktif)':'')).join('\n');
+  const answer=prompt('Geçmek istediğin firma numarasını yaz:\n'+message);
+  if(answer===null)return;
+  const n=Number(answer),target=choices[n-1];
+  if(!Number.isInteger(n)||!target)return alert('Geçerli bir firma numarası seç.');
+  if(target.id===cloudFirm)return;
+  await chooseFirm(target.id);
+ }catch(e){alert('Firma değiştirilemedi: '+cloudError(e));}
+};
 async function cloudAll(table,columns){
  let rows=[];
  for(let from=0;from<10000;from+=500){
@@ -529,7 +554,7 @@ document.getElementById('cloudLogin').onclick=async()=>{
  }catch(e){cloudMessage(cloudError(e));}finally{btn.disabled=false;}
 };
 document.getElementById('cloudLogout').onclick=async()=>{
- await cloudClient.auth.signOut();cloudReady=false;cloudFirm=null;
+ await cloudClient.auth.signOut();cloudReady=false;cloudFirm=null;cloudMemberships=[];
  db.customers=[];db.transactions=[];db.collections=[];db.offers=[];db.checks=[];db.notes=[];originalRefresh();
  document.getElementById('cloudBar').style.display='none';
  document.getElementById('cloudGate').style.display='flex';showScreen('home');
